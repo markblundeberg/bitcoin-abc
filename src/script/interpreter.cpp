@@ -1005,6 +1005,60 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         // ... (TBD) ...
 
                         if (newmode) {
+                            // New mode
+
+                            // Note these flags MUST be active in new mode.
+                            // Putting sanity check here for now.
+                            // NULLFAIL is applied intrinsically
+                            assert(flags & SCRIPT_VERIFY_NULLFAIL);
+                            // SCHNORR valid, obviously.
+                            assert(flags & SCRIPT_ENABLE_SCHNORR);
+                            // must be postfork -- we never do
+                            // CleanupScriptCode().
+                            assert(flags & SCRIPT_ENABLE_SIGHASH_FORKID);
+
+                            if ((int)stack.size() < 2 + 2 * nKeysCount) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            }
+
+                            // ok, time for actual logic:
+                            int validsigs = 0;
+                            for (i = 0; i < nKeysCount; i++) {
+                                valtype &vchPubKey = stacktop(-(i + 1));
+                                valtype &vchSig =
+                                    stacktop(-(i + 2 + nKeysCount));
+
+                                // all pubkeys get checked no matter what
+                                // we also check sig size and sighash byte
+                                if (!CheckTransactionSchnorrSignatureEncoding(
+                                        vchSig, flags, serror) ||
+                                    !CheckPubKeyEncoding(vchPubKey, flags,
+                                                         serror)) {
+                                    // serror is set
+                                    return false;
+                                }
+
+                                if (vchSig.size()) {
+                                    if (!checker.CheckSig(vchSig, vchPubKey,
+                                                          scriptCode, flags)) {
+                                        return set_error(
+                                            serror, SCRIPT_ERR_SIG_NULLFAIL);
+                                    }
+                                    validsigs++;
+                                } // else null sig: do nothing
+                            }
+
+                            if (validsigs == nKeysCount) {
+                                fSuccess = true;
+                            } else if (validsigs == 0) {
+                                fSuccess = false;
+                            } else {
+                                // wrong number of non-NULL signatures! (too few
+                                // or many)
+                                return set_error(serror,
+                                                 SCRIPT_ERR_SIG_NULLFAIL);
+                            }
                         } else {
                             // Legacy mode
 
