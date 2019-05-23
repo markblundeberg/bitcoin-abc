@@ -982,11 +982,6 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(serror, SCRIPT_ERR_OP_COUNT);
                         }
                         int ikey = ++i;
-                        // ikey2 is the position of last non-signature item in
-                        // the stack. Top stack item = 1. With
-                        // SCRIPT_VERIFY_NULLFAIL, this is used for cleanup if
-                        // operation fails.
-                        int ikey2 = nKeysCount + 2;
                         i += nKeysCount;
                         if ((int)stack.size() < i) {
                             return set_error(
@@ -998,6 +993,19 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         if (nSigsCount < 0 || nSigsCount > nKeysCount) {
                             return set_error(serror, SCRIPT_ERR_SIG_COUNT);
                         }
+
+                        // Subset of script starting at the most recent
+                        // codeseparator
+                        CScript scriptCode(pbegincodehash, pend);
+
+                        bool fSuccess;
+
+                        // ikey2 is the position of last non-signature item in
+                        // the stack. Top stack item = 1. With
+                        // SCRIPT_VERIFY_NULLFAIL, this is used for cleanup if
+                        // operation fails.
+                        int ikey2 = nKeysCount + 2;
+
                         int isig = ++i;
                         i += nSigsCount;
                         if ((int)stack.size() < i) {
@@ -1005,17 +1013,13 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                         }
 
-                        // Subset of script starting at the most recent
-                        // codeseparator
-                        CScript scriptCode(pbegincodehash, pend);
-
                         // Remove signature for pre-fork scripts
                         for (int k = 0; k < nSigsCount; k++) {
                             valtype &vchSig = stacktop(-isig - k);
                             CleanupScriptCode(scriptCode, vchSig, flags);
                         }
 
-                        bool fSuccess = true;
+                        fSuccess = true;
                         while (fSuccess && nSigsCount > 0) {
                             valtype &vchSig = stacktop(-isig);
                             valtype &vchPubKey = stacktop(-ikey);
