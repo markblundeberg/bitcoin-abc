@@ -88,7 +88,7 @@ public:
 
 bool EvalScript(std::vector<std::vector<uint8_t>> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
-                ScriptError *error = nullptr);
+                ScriptError *error = nullptr, uint32_t *pnSigChecks = nullptr);
 bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   uint32_t flags, const BaseSignatureChecker &checker,
                   ScriptError *serror = nullptr);
