@@ -1006,13 +1006,91 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                         }
 
+                        // Decide whether new mode should be run:
+                        // 1. Only if flag on.
+                        bool newmode = (flags & SCRIPT_ENABLE_NEW_MULTISIG);
+                        // 2. Only if all pubkeys have acceptable encoding.
+                        for (int icheckkey = 0;
+                             newmode && icheckkey < nKeysCount; icheckkey++) {
+                            valtype &vchPubKey = stacktop(-(1 + icheckkey));
+                            newmode = newmode && CheckPubKeyEncoding(
+                                                     vchPubKey, flags, nullptr);
+                        }
+                        // 3. Only if all signatures are null (0 bytes) or
+                        // Schnorr (65 bytes and acceptable hashtype byte).
+                        for (int ichecksig = 0;
+                             newmode && ichecksig < nSigsCount; ichecksig++) {
+                            valtype &vchSig = stacktop(-(1 + ichecksig));
+                            newmode = newmode &&
+                                      CheckTransactionSchnorrSignatureEncoding(
+                                          vchSig, flags, nullptr);
+                        }
+
                         bool fSuccess = true;
 
                         // Subset of script starting at the most recent
                         // codeseparator
                         CScript scriptCode(pbegincodehash, pend);
 
-                        {
+                        if (newmode) {
+                            // NEW MULTISIG (SCHNORR / NULL)
+
+                            // "Dummy" element is now an integer whose bits
+                            // represent which pubkeys should be checked. We
+                            // require it to be minimally encoded regardless of
+                            // MINIMALDATA flag.
+                            CScriptNum nWhichSigs(stacktop(-idummy),
+                                                  /* fRequireMinimal = */ true);
+                            if (nWhichSigs < 0) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+                            }
+
+                            while (nSigsCount > 0 && nKeysCount > 0) {
+                                if ((nWhichSigs & 1) == 1) {
+                                    // Check signature as requested; note that
+                                    // pubkey/sig encodings were already checked
+                                    // as part of trigger.
+                                    valtype &vchPubKey = stacktop(-ikey);
+                                    valtype &vchSig = stacktop(-isig);
+                                    if (!checker.CheckSig(vchSig, vchPubKey,
+                                                          scriptCode, flags)) {
+                                        // It is forbidden to request invalid
+                                        // signature. Make the error message a
+                                        // bit informative though.
+                                        return set_error(
+                                            serror,
+                                            vchSig.size()
+                                                ? SCRIPT_ERR_SIG_NULLFAIL
+                                                : SCRIPT_ERR_SIG_NULLDUMMY);
+                                    }
+                                    // A successful checksig is the only way to
+                                    // decrement nSigsCount.
+                                    isig++;
+                                    nSigsCount--;
+                                }
+                                nWhichSigs >>= 1;
+                                ikey++;
+                                nKeysCount--;
+                            }
+                            if (nWhichSigs != 0) {
+                                // Ended before consuming all bits, because too
+                                // many 1 bits were set, or, nWhichSigs had
+                                // too-high bits set.
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+                            }
+                            if (nSigsCount > 0) {
+                                // Ended before checking all signatures, because
+                                // too few 1 bits were set. This is not
+                                // necessarily an error but means the operation
+                                // is false. Nullfail rule below will enforce
+                                // that all signatures have to be null, which in
+                                // turn means the initial dummy element would
+                                // have had to be zero as well.
+                                fSuccess = false;
+                            }
+                        } else {
                             // LEGACY MULTISIG (ECDSA / NULL)
                             // A bug causes CHECKMULTISIG to consume one extra
                             // argument whose contents were not checked in any
