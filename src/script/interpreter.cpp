@@ -1000,14 +1000,28 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         }
                         int isig = ++i;
                         i += nSigsCount;
-                        if ((int)stack.size() < i) {
+                        int idummy = i;
+                        if ((int)stack.size() < idummy) {
                             return set_error(
                                 serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                         }
 
+                        bool fSuccess = true;
+
                         // Subset of script starting at the most recent
                         // codeseparator
                         CScript scriptCode(pbegincodehash, pend);
+
+                        // A bug causes CHECKMULTISIG to consume one extra
+                        // argument whose contents were not checked in any way.
+                        //
+                        // Unfortunately this is a potential source of
+                        // mutability, so optionally verify it is exactly equal
+                        // to zero.
+                        if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
+                            stacktop(-idummy).size()) {
+                            return set_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
+                        }
 
                         // Remove signature for pre-fork scripts
                         for (int k = 0; k < nSigsCount; k++) {
@@ -1015,7 +1029,6 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             CleanupScriptCode(scriptCode, vchSig, flags);
                         }
 
-                        bool fSuccess = true;
                         while (fSuccess && nSigsCount > 0) {
                             valtype &vchSig = stacktop(-isig);
                             valtype &vchPubKey = stacktop(-ikey);
@@ -1066,20 +1079,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             popstack(stack);
                         }
 
-                        // A bug causes CHECKMULTISIG to consume one extra
-                        // argument whose contents were not checked in any way.
-                        //
-                        // Unfortunately this is a potential source of
-                        // mutability, so optionally verify it is exactly equal
-                        // to zero prior to removing it from the stack.
-                        if (stack.size() < 1) {
-                            return set_error(
-                                serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                        }
-                        if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
-                            stacktop(-1).size()) {
-                            return set_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
-                        }
+                        // Pop dummy element
                         popstack(stack);
 
                         stack.push_back(fSuccess ? vchTrue : vchFalse);
