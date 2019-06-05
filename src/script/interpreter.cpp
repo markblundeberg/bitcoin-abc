@@ -1012,7 +1012,69 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         // codeseparator
                         CScript scriptCode(pbegincodehash, pend);
 
-                        {
+                        if ((flags & SCRIPT_ENABLE_NEW_MULTISIG) &&
+                            (stacktop(-idummy).size() != 0)) {
+                            // NEW MULTISIG (SCHNORR / NULL)
+
+                            // "Dummy" element is now an integer whose bits
+                            // represent which pubkeys should be checked. We
+                            // require it to be minimally encoded regardless of
+                            // MINIMALDATA flag.
+                            CScriptNum nWhichSigs(stacktop(-idummy),
+                                                  /* fRequireMinimal = */ true);
+                            if (nWhichSigs < 0) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+                            }
+
+                            while (nSigsCount > 0 && nKeysCount > 0) {
+                                if ((nWhichSigs & 1) == 1) {
+                                    // Check signature as requested
+                                    valtype &vchPubKey = stacktop(-ikey);
+                                    valtype &vchSig = stacktop(-isig);
+                                    if (!CheckTransactionSchnorrSignatureEncoding(
+                                            vchSig, flags, serror) ||
+                                        !CheckPubKeyEncoding(vchPubKey, flags,
+                                                             serror)) {
+                                        // serror is set
+                                        return false;
+                                    }
+                                    if (!checker.CheckSig(vchSig, vchPubKey,
+                                                          scriptCode, flags)) {
+                                        // It is forbidden to request invalid
+                                        // signature. Make the error message a
+                                        // bit informative though.
+                                        return set_error(
+                                            serror,
+                                            vchSig.size()
+                                                ? SCRIPT_ERR_SIG_NULLFAIL
+                                                : SCRIPT_ERR_SIG_NULLDUMMY);
+                                    }
+                                    // A successful checksig is the only way to
+                                    // decrement nSigsCount.
+                                    isig++;
+                                    nSigsCount--;
+                                }
+                                nWhichSigs >>= 1;
+                                ikey++;
+                                nKeysCount--;
+                            }
+                            if (nWhichSigs != 0) {
+                                // Ended before consuming all bits, because too
+                                // many 1 bits were set, or, nWhichSigs had
+                                // too-high bits set.
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+                            }
+                            if (nSigsCount > 0) {
+                                // Ended before checking all signatures, because
+                                // too few 1 bits were set. Nullfail rule below
+                                // will turn this into an error since we only
+                                // get here by having at least one bit set and
+                                // at least one valid sig.
+                                fSuccess = false;
+                            }
+                        } else {
                             // LEGACY MULTISIG (ECDSA / NULL)
                             // A bug causes CHECKMULTISIG to consume one extra
                             // argument whose contents were not checked in any
