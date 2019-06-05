@@ -1012,55 +1012,62 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         // codeseparator
                         CScript scriptCode(pbegincodehash, pend);
 
-                        // A bug causes CHECKMULTISIG to consume one extra
-                        // argument whose contents were not checked in any way.
-                        //
-                        // Unfortunately this is a potential source of
-                        // mutability, so optionally verify it is exactly equal
-                        // to zero.
-                        if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
-                            stacktop(-idummy).size()) {
-                            return set_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
-                        }
-
-                        // Remove signature for pre-fork scripts
-                        for (int k = 0; k < nSigsCount; k++) {
-                            valtype &vchSig = stacktop(-isig - k);
-                            CleanupScriptCode(scriptCode, vchSig, flags);
-                        }
-
-                        while (fSuccess && nSigsCount > 0) {
-                            valtype &vchSig = stacktop(-isig);
-                            valtype &vchPubKey = stacktop(-ikey);
-
-                            // Note how this makes the exact order of
-                            // pubkey/signature evaluation distinguishable by
-                            // CHECKMULTISIG NOT if the STRICTENC flag is set.
-                            // See the script_(in)valid tests for details.
-                            if (!CheckTransactionECDSASignatureEncoding(
-                                    vchSig, flags, serror) ||
-                                !CheckPubKeyEncoding(vchPubKey, flags,
-                                                     serror)) {
-                                // serror is set
-                                return false;
+                        {
+                            // LEGACY MULTISIG (ECDSA / NULL)
+                            // A bug causes CHECKMULTISIG to consume one extra
+                            // argument whose contents were not checked in any
+                            // way.
+                            //
+                            // Unfortunately this is a potential source of
+                            // mutability, so optionally verify it is exactly
+                            // equal to zero.
+                            if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
+                                stacktop(-idummy).size()) {
+                                return set_error(serror,
+                                                 SCRIPT_ERR_SIG_NULLDUMMY);
                             }
 
-                            // Check signature
-                            bool fOk = checker.CheckSig(vchSig, vchPubKey,
-                                                        scriptCode, flags);
-
-                            if (fOk) {
-                                isig++;
-                                nSigsCount--;
+                            // Remove signature for pre-fork scripts
+                            for (int k = 0; k < nSigsCount; k++) {
+                                valtype &vchSig = stacktop(-isig - k);
+                                CleanupScriptCode(scriptCode, vchSig, flags);
                             }
-                            ikey++;
-                            nKeysCount--;
 
-                            // If there are more signatures left than keys left,
-                            // then too many signatures have failed. Exit early,
-                            // without checking any further signatures.
-                            if (nSigsCount > nKeysCount) {
-                                fSuccess = false;
+                            while (fSuccess && nSigsCount > 0) {
+                                valtype &vchSig = stacktop(-isig);
+                                valtype &vchPubKey = stacktop(-ikey);
+
+                                // Note how this makes the exact order of
+                                // pubkey/signature evaluation distinguishable
+                                // by CHECKMULTISIG NOT if the STRICTENC flag is
+                                // set. See the script_(in)valid tests for
+                                // details.
+                                if (!CheckTransactionECDSASignatureEncoding(
+                                        vchSig, flags, serror) ||
+                                    !CheckPubKeyEncoding(vchPubKey, flags,
+                                                         serror)) {
+                                    // serror is set
+                                    return false;
+                                }
+
+                                // Check signature
+                                bool fOk = checker.CheckSig(vchSig, vchPubKey,
+                                                            scriptCode, flags);
+
+                                if (fOk) {
+                                    isig++;
+                                    nSigsCount--;
+                                }
+                                ikey++;
+                                nKeysCount--;
+
+                                // If there are more signatures left than keys
+                                // left, then too many signatures have failed.
+                                // Exit early, without checking any further
+                                // signatures.
+                                if (nSigsCount > nKeysCount) {
+                                    fSuccess = false;
+                                }
                             }
                         }
 
