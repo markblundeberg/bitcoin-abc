@@ -92,6 +92,8 @@ const char *ScriptErrorString(const ScriptError serror) {
             return "Script did not clean its stack";
         case SCRIPT_ERR_NONCOMPRESSED_PUBKEY:
             return "Using non-compressed public key";
+        case SCRIPT_ERR_SIGCHECKS_LIMIT:
+            return "Too many sigchecks";
         case SCRIPT_ERR_ILLEGAL_FORKID:
             return "Illegal use of SIGHASH_FORKID";
         case SCRIPT_ERR_MUST_USE_FORKID:

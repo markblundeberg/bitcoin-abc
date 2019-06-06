@@ -69,6 +69,7 @@ typedef enum ScriptError_t {
 
     /* misc */
     SCRIPT_ERR_NONCOMPRESSED_PUBKEY,
+    SCRIPT_ERR_SIGCHECKS_LIMIT,
 
     /* anti replay */
     SCRIPT_ERR_ILLEGAL_FORKID,

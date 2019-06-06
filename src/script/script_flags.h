@@ -111,6 +111,10 @@ enum {
     // The exception to CLEANSTACK and P2SH for the recovery of coins sent
     // to p2sh segwit addresses is not allowed.
     SCRIPT_DISALLOW_SEGWIT_RECOVERY = (1U << 20),
+
+    // Whether to limit the number of 'sigchecks' that occur during script
+    // execution to at most 2 + (scriptsig_length / 45).
+    SCRIPT_VERIFY_SIGCHECKS_LIMIT = (1U << 21),
 };
 
 #endif // BITCOIN_SCRIPT_SCRIPTFLAGS_H

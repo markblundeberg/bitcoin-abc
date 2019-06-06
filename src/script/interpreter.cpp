@@ -1600,6 +1600,7 @@ bool TransactionSignatureChecker::CheckSequence(
 bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   uint32_t flags, const BaseSignatureChecker &checker,
                   ScriptError *serror) {
+    uint32_t nSigChecks = 0;
     set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
 
     // If FORKID is enabled, we also ensure strict encoding.
@@ -1612,14 +1613,14 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     }
 
     std::vector<valtype> stack, stackCopy;
-    if (!EvalScript(stack, scriptSig, flags, checker, serror)) {
+    if (!EvalScript(stack, scriptSig, flags, checker, serror, &nSigChecks)) {
         // serror is set
         return false;
     }
     if (flags & SCRIPT_VERIFY_P2SH) {
         stackCopy = stack;
     }
-    if (!EvalScript(stack, scriptPubKey, flags, checker, serror)) {
+    if (!EvalScript(stack, scriptPubKey, flags, checker, serror, &nSigChecks)) {
         // serror is set
         return false;
     }
@@ -1657,7 +1658,7 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
             return set_success(serror);
         }
 
-        if (!EvalScript(stack, pubKey2, flags, checker, serror)) {
+        if (!EvalScript(stack, pubKey2, flags, checker, serror, &nSigChecks)) {
             // serror is set
             return false;
         }
@@ -1681,6 +1682,11 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         if (stack.size() != 1) {
             return set_error(serror, SCRIPT_ERR_CLEANSTACK);
         }
+    }
+
+    if ((flags & SCRIPT_VERIFY_SIGCHECKS_LIMIT) &&
+        (nSigChecks > 2 + scriptSig.size() / 45)) {
+        return set_error(serror, SCRIPT_ERR_SIGCHECKS_LIMIT);
     }
 
     return set_success(serror);
