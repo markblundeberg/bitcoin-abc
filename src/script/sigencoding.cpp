@@ -174,6 +174,14 @@ static bool CheckRawECDSASignatureEncoding(const slicedvaltype &sig,
     return true;
 }
 
+static bool CheckRawSchnorrSignatureEncoding(const slicedvaltype &sig,
+                                             uint32_t flags,
+                                             ScriptError *serror) {
+    // In a generic-signature context, 64-byte signatures are interpreted
+    // as Schnorr signatures (always correctly encoded) when flag set.
+    return (sig.size() == 64);
+}
+
 static bool CheckRawSignatureEncoding(const slicedvaltype &sig, uint32_t flags,
                                       ScriptError *serror) {
     if ((flags & SCRIPT_ENABLE_SCHNORR) && (sig.size() == 64)) {
@@ -256,6 +264,18 @@ bool CheckTransactionECDSASignatureEncoding(const valtype &vchSig,
            ScriptError *templateSerror) {
             return CheckRawECDSASignatureEncoding(templateSig, templateFlags,
                                                   templateSerror);
+        });
+}
+
+bool CheckTransactionSchnorrSignatureEncoding(const valtype &vchSig,
+                                              uint32_t flags,
+                                              ScriptError *serror) {
+    return CheckTransactionSignatureEncodingImpl(
+        vchSig, flags, serror,
+        [](const slicedvaltype &templateSig, uint32_t templateFlags,
+           ScriptError *templateSerror) {
+            return CheckRawSchnorrSignatureEncoding(templateSig, templateFlags,
+                                                    templateSerror);
         });
 }
 

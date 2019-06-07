@@ -1000,54 +1000,152 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         }
                         int isig = ++i;
                         i += nSigsCount;
-                        if ((int)stack.size() < i) {
+                        int idummy = i;
+                        if ((int)stack.size() < idummy) {
                             return set_error(
                                 serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                         }
+
+                        // Decide whether new mode should be run:
+                        // 1. Only if flag on.
+                        bool newmode = (flags & SCRIPT_ENABLE_NEW_MULTISIG);
+                        // 2. Only if all pubkeys have acceptable encoding.
+                        for (int icheckkey = 0;
+                             newmode && icheckkey < nKeysCount; icheckkey++) {
+                            valtype &vchPubKey = stacktop(-(1 + icheckkey));
+                            newmode = newmode && CheckPubKeyEncoding(
+                                                     vchPubKey, flags, nullptr);
+                        }
+                        // 3. Only if all signatures are null (0 bytes) or
+                        // Schnorr (65 bytes and acceptable hashtype byte).
+                        for (int ichecksig = 0;
+                             newmode && ichecksig < nSigsCount; ichecksig++) {
+                            valtype &vchSig = stacktop(-(1 + ichecksig));
+                            newmode = newmode &&
+                                      CheckTransactionSchnorrSignatureEncoding(
+                                          vchSig, flags, nullptr);
+                        }
+
+                        bool fSuccess = true;
 
                         // Subset of script starting at the most recent
                         // codeseparator
                         CScript scriptCode(pbegincodehash, pend);
 
-                        // Remove signature for pre-fork scripts
-                        for (int k = 0; k < nSigsCount; k++) {
-                            valtype &vchSig = stacktop(-isig - k);
-                            CleanupScriptCode(scriptCode, vchSig, flags);
-                        }
+                        if (newmode) {
+                            // NEW MULTISIG (SCHNORR / NULL)
 
-                        bool fSuccess = true;
-                        while (fSuccess && nSigsCount > 0) {
-                            valtype &vchSig = stacktop(-isig);
-                            valtype &vchPubKey = stacktop(-ikey);
-
-                            // Note how this makes the exact order of
-                            // pubkey/signature evaluation distinguishable by
-                            // CHECKMULTISIG NOT if the STRICTENC flag is set.
-                            // See the script_(in)valid tests for details.
-                            if (!CheckTransactionECDSASignatureEncoding(
-                                    vchSig, flags, serror) ||
-                                !CheckPubKeyEncoding(vchPubKey, flags,
-                                                     serror)) {
-                                // serror is set
-                                return false;
+                            // "Dummy" element is now an integer whose bits
+                            // represent which pubkeys should be checked. We
+                            // require it to be minimally encoded regardless of
+                            // MINIMALDATA flag.
+                            CScriptNum nWhichSigs(stacktop(-idummy),
+                                                  /* fRequireMinimal = */ true);
+                            if (nWhichSigs < 0) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_NUMBER_RANGE);
                             }
 
-                            // Check signature
-                            bool fOk = checker.CheckSig(vchSig, vchPubKey,
-                                                        scriptCode, flags);
-
-                            if (fOk) {
-                                isig++;
-                                nSigsCount--;
+                            while (nSigsCount > 0 && nKeysCount > 0) {
+                                if ((nWhichSigs & 1) == 1) {
+                                    // Check signature as requested; note that
+                                    // pubkey/sig encodings were already checked
+                                    // as part of trigger.
+                                    valtype &vchPubKey = stacktop(-ikey);
+                                    valtype &vchSig = stacktop(-isig);
+                                    if (!checker.CheckSig(vchSig, vchPubKey,
+                                                          scriptCode, flags)) {
+                                        // It is forbidden to request invalid
+                                        // signature. Make the error message a
+                                        // bit informative though.
+                                        return set_error(
+                                            serror,
+                                            vchSig.size()
+                                                ? SCRIPT_ERR_SIG_NULLFAIL
+                                                : SCRIPT_ERR_SIG_NULLDUMMY);
+                                    }
+                                    // A successful checksig is the only way to
+                                    // decrement nSigsCount.
+                                    isig++;
+                                    nSigsCount--;
+                                }
+                                nWhichSigs >>= 1;
+                                ikey++;
+                                nKeysCount--;
                             }
-                            ikey++;
-                            nKeysCount--;
-
-                            // If there are more signatures left than keys left,
-                            // then too many signatures have failed. Exit early,
-                            // without checking any further signatures.
-                            if (nSigsCount > nKeysCount) {
+                            if (nWhichSigs != 0) {
+                                // Ended before consuming all bits, because too
+                                // many 1 bits were set, or, nWhichSigs had
+                                // too-high bits set.
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+                            }
+                            if (nSigsCount > 0) {
+                                // Ended before checking all signatures, because
+                                // too few 1 bits were set. This is not
+                                // necessarily an error but means the operation
+                                // is false. Nullfail rule below will enforce
+                                // that all signatures have to be null, which in
+                                // turn means the initial dummy element would
+                                // have had to be zero as well.
                                 fSuccess = false;
+                            }
+                        } else {
+                            // LEGACY MULTISIG (ECDSA / NULL)
+                            // A bug causes CHECKMULTISIG to consume one extra
+                            // argument whose contents were not checked in any
+                            // way.
+                            //
+                            // Unfortunately this is a potential source of
+                            // mutability, so optionally verify it is exactly
+                            // equal to zero.
+                            if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
+                                stacktop(-idummy).size()) {
+                                return set_error(serror,
+                                                 SCRIPT_ERR_SIG_NULLDUMMY);
+                            }
+
+                            // Remove signature for pre-fork scripts
+                            for (int k = 0; k < nSigsCount; k++) {
+                                valtype &vchSig = stacktop(-isig - k);
+                                CleanupScriptCode(scriptCode, vchSig, flags);
+                            }
+
+                            while (fSuccess && nSigsCount > 0) {
+                                valtype &vchSig = stacktop(-isig);
+                                valtype &vchPubKey = stacktop(-ikey);
+
+                                // Note how this makes the exact order of
+                                // pubkey/signature evaluation distinguishable
+                                // by CHECKMULTISIG NOT if the STRICTENC flag is
+                                // set. See the script_(in)valid tests for
+                                // details.
+                                if (!CheckTransactionECDSASignatureEncoding(
+                                        vchSig, flags, serror) ||
+                                    !CheckPubKeyEncoding(vchPubKey, flags,
+                                                         serror)) {
+                                    // serror is set
+                                    return false;
+                                }
+
+                                // Check signature
+                                bool fOk = checker.CheckSig(vchSig, vchPubKey,
+                                                            scriptCode, flags);
+
+                                if (fOk) {
+                                    isig++;
+                                    nSigsCount--;
+                                }
+                                ikey++;
+                                nKeysCount--;
+
+                                // If there are more signatures left than keys
+                                // left, then too many signatures have failed.
+                                // Exit early, without checking any further
+                                // signatures.
+                                if (nSigsCount > nKeysCount) {
+                                    fSuccess = false;
+                                }
                             }
                         }
 
@@ -1066,20 +1164,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             popstack(stack);
                         }
 
-                        // A bug causes CHECKMULTISIG to consume one extra
-                        // argument whose contents were not checked in any way.
-                        //
-                        // Unfortunately this is a potential source of
-                        // mutability, so optionally verify it is exactly equal
-                        // to zero prior to removing it from the stack.
-                        if (stack.size() < 1) {
-                            return set_error(
-                                serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                        }
-                        if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
-                            stacktop(-1).size()) {
-                            return set_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
-                        }
+                        // Pop dummy element
                         popstack(stack);
 
                         stack.push_back(fSuccess ? vchTrue : vchFalse);
