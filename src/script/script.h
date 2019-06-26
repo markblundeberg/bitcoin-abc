@@ -339,6 +339,12 @@ public:
         return *this;
     }
 
+    inline CScriptNum &operator>>=(const int64_t &rhs) {
+        assert(rhs >= 0 && m_value >= 0 && rhs < 64);
+        m_value >>= rhs;
+        return *this;
+    }
+
     int getint() const {
         if (m_value > std::numeric_limits<int>::max())
             return std::numeric_limits<int>::max();
