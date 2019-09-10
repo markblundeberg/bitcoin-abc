@@ -982,11 +982,6 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(serror, SCRIPT_ERR_OP_COUNT);
                         }
                         int ikey = ++i;
-                        // ikey2 is the position of last non-signature item in
-                        // the stack. Top stack item = 1. With
-                        // SCRIPT_VERIFY_NULLFAIL, this is used for cleanup if
-                        // operation fails.
-                        int ikey2 = nKeysCount + 2;
                         i += nKeysCount;
                         if ((int)stack.size() < i) {
                             return set_error(
@@ -998,89 +993,167 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         if (nSigsCount < 0 || nSigsCount > nKeysCount) {
                             return set_error(serror, SCRIPT_ERR_SIG_COUNT);
                         }
-                        int isig = ++i;
-                        i += nSigsCount;
-                        if ((int)stack.size() < i) {
-                            return set_error(
-                                serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                        }
 
                         // Subset of script starting at the most recent
                         // codeseparator
                         CScript scriptCode(pbegincodehash, pend);
 
-                        // Remove signature for pre-fork scripts
-                        for (int k = 0; k < nSigsCount; k++) {
-                            valtype &vchSig = stacktop(-isig - k);
-                            CleanupScriptCode(scriptCode, vchSig, flags);
-                        }
+                        bool fSuccess;
 
-                        bool fSuccess = true;
-                        while (fSuccess && nSigsCount > 0) {
-                            valtype &vchSig = stacktop(-isig);
-                            valtype &vchPubKey = stacktop(-ikey);
+                        // Perform decision of which mode should be used.
+                        bool newmode = false;
+                        // ... (TBD) ...
 
-                            // Note how this makes the exact order of
-                            // pubkey/signature evaluation distinguishable by
-                            // CHECKMULTISIG NOT if the STRICTENC flag is set.
-                            // See the script_(in)valid tests for details.
-                            if (!CheckTransactionECDSASignatureEncoding(
-                                    vchSig, flags, serror) ||
-                                !CheckPubKeyEncoding(vchPubKey, flags,
-                                                     serror)) {
-                                // serror is set
-                                return false;
+                        if (newmode) {
+                            // New mode
+
+                            // Note these flags MUST be active in new mode.
+                            // Putting sanity check here for now.
+                            // NULLFAIL is applied intrinsically
+                            assert(flags & SCRIPT_VERIFY_NULLFAIL);
+                            // SCHNORR valid, obviously.
+                            assert(flags & SCRIPT_ENABLE_SCHNORR);
+                            // must be postfork -- we never do
+                            // CleanupScriptCode().
+                            assert(flags & SCRIPT_ENABLE_SIGHASH_FORKID);
+
+                            if ((int)stack.size() < 2 + 2 * nKeysCount) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
                             }
 
-                            // Check signature
-                            bool fOk = checker.CheckSig(vchSig, vchPubKey,
-                                                        scriptCode, flags);
+                            // ok, time for actual logic:
+                            int validsigs = 0;
+                            for (i = 0; i < nKeysCount; i++) {
+                                valtype &vchPubKey = stacktop(-(i + 1));
+                                valtype &vchSig =
+                                    stacktop(-(i + 2 + nKeysCount));
 
-                            if (fOk) {
-                                isig++;
-                                nSigsCount--;
+                                // all pubkeys get checked no matter what
+                                // we also check sig size and sighash byte
+                                if (!CheckTransactionSchnorrSignatureEncoding(
+                                        vchSig, flags, serror) ||
+                                    !CheckPubKeyEncoding(vchPubKey, flags,
+                                                         serror)) {
+                                    // serror is set
+                                    return false;
+                                }
+
+                                if (vchSig.size()) {
+                                    if (!checker.CheckSig(vchSig, vchPubKey,
+                                                          scriptCode, flags)) {
+                                        return set_error(
+                                            serror, SCRIPT_ERR_SIG_NULLFAIL);
+                                    }
+                                    validsigs++;
+                                } // else null sig: do nothing
                             }
-                            ikey++;
-                            nKeysCount--;
 
-                            // If there are more signatures left than keys left,
-                            // then too many signatures have failed. Exit early,
-                            // without checking any further signatures.
-                            if (nSigsCount > nKeysCount) {
+                            if (validsigs == nKeysCount) {
+                                fSuccess = true;
+                            } else if (validsigs == 0) {
                                 fSuccess = false;
-                            }
-                        }
-
-                        // Clean up stack of actual arguments
-                        while (i-- > 1) {
-                            // If the operation failed, we require that all
-                            // signatures must be empty vector
-                            if (!fSuccess && (flags & SCRIPT_VERIFY_NULLFAIL) &&
-                                !ikey2 && stacktop(-1).size()) {
+                            } else {
+                                // wrong number of non-NULL signatures! (too few
+                                // or many)
                                 return set_error(serror,
                                                  SCRIPT_ERR_SIG_NULLFAIL);
                             }
-                            if (ikey2 > 0) {
-                                ikey2--;
+                        } else {
+                            // Legacy mode
+
+                            // ikey2 is the position of last non-signature item
+                            // in the stack. Top stack item = 1. With
+                            // SCRIPT_VERIFY_NULLFAIL, this is used for cleanup
+                            // if operation fails.
+                            int ikey2 = nKeysCount + 2;
+
+                            int isig = ++i;
+                            i += nSigsCount;
+                            if ((int)stack.size() < i) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            }
+
+                            // Remove signature for pre-fork scripts
+                            for (int k = 0; k < nSigsCount; k++) {
+                                valtype &vchSig = stacktop(-isig - k);
+                                CleanupScriptCode(scriptCode, vchSig, flags);
+                            }
+
+                            fSuccess = true;
+                            while (fSuccess && nSigsCount > 0) {
+                                valtype &vchSig = stacktop(-isig);
+                                valtype &vchPubKey = stacktop(-ikey);
+
+                                // Note how this makes the exact order of
+                                // pubkey/signature evaluation distinguishable
+                                // by CHECKMULTISIG NOT if the STRICTENC flag is
+                                // set. See the script_(in)valid tests for
+                                // details.
+                                if (!CheckTransactionECDSASignatureEncoding(
+                                        vchSig, flags, serror) ||
+                                    !CheckPubKeyEncoding(vchPubKey, flags,
+                                                         serror)) {
+                                    // serror is set
+                                    return false;
+                                }
+
+                                // Check signature
+                                bool fOk = checker.CheckSig(vchSig, vchPubKey,
+                                                            scriptCode, flags);
+
+                                if (fOk) {
+                                    isig++;
+                                    nSigsCount--;
+                                }
+                                ikey++;
+                                nKeysCount--;
+
+                                // If there are more signatures left than keys
+                                // left, then too many signatures have failed.
+                                // Exit early, without checking any further
+                                // signatures.
+                                if (nSigsCount > nKeysCount) {
+                                    fSuccess = false;
+                                }
+                            }
+
+                            // Clean up stack of actual arguments
+                            while (i-- > 1) {
+                                // If the operation failed, we require that all
+                                // signatures must be empty vector
+                                if (!fSuccess &&
+                                    (flags & SCRIPT_VERIFY_NULLFAIL) &&
+                                    !ikey2 && stacktop(-1).size()) {
+                                    return set_error(serror,
+                                                     SCRIPT_ERR_SIG_NULLFAIL);
+                                }
+                                if (ikey2 > 0) {
+                                    ikey2--;
+                                }
+                                popstack(stack);
+                            }
+
+                            // A bug causes CHECKMULTISIG to consume one extra
+                            // argument whose contents were not checked in any
+                            // way.
+                            //
+                            // Unfortunately this is a potential source of
+                            // mutability, so optionally verify it is exactly
+                            // equal to zero prior to removing it from the
+                            // stack.
+                            if (stack.size() < 1) {
+                                return set_error(
+                                    serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+                            }
+                            if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
+                                stacktop(-1).size()) {
+                                return set_error(serror,
+                                                 SCRIPT_ERR_SIG_NULLDUMMY);
                             }
                             popstack(stack);
                         }
-
-                        // A bug causes CHECKMULTISIG to consume one extra
-                        // argument whose contents were not checked in any way.
-                        //
-                        // Unfortunately this is a potential source of
-                        // mutability, so optionally verify it is exactly equal
-                        // to zero prior to removing it from the stack.
-                        if (stack.size() < 1) {
-                            return set_error(
-                                serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
-                        }
-                        if ((flags & SCRIPT_VERIFY_NULLDUMMY) &&
-                            stacktop(-1).size()) {
-                            return set_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
-                        }
-                        popstack(stack);
 
                         stack.push_back(fSuccess ? vchTrue : vchFalse);
 
