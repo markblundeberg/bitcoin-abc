@@ -101,7 +101,7 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
 
 bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
-                ScriptError *serror) {
+                ScriptError *serror, uint32_t *pnSigChecks) {
     static const CScriptNum bnZero(0);
     static const CScriptNum bnOne(1);
     static const valtype vchFalse(0);
@@ -898,6 +898,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
                         }
 
+                        if (fSuccess && pnSigChecks) {
+                            *pnSigChecks += 1;
+                        }
+
                         popstack(stack);
                         popstack(stack);
                         stack.push_back(fSuccess ? vchTrue : vchFalse);
@@ -946,6 +950,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(serror, SCRIPT_ERR_SIG_NULLFAIL);
                         }
 
+                        if (fSuccess && pnSigChecks) {
+                            *pnSigChecks += 1;
+                        }
+
                         popstack(stack);
                         popstack(stack);
                         popstack(stack);
@@ -977,6 +985,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             nKeysCount > MAX_PUBKEYS_PER_MULTISIG) {
                             return set_error(serror, SCRIPT_ERR_PUBKEY_COUNT);
                         }
+                        const int origN = nKeysCount;
                         nOpCount += nKeysCount;
                         if (nOpCount > MAX_OPS_PER_SCRIPT) {
                             return set_error(serror, SCRIPT_ERR_OP_COUNT);
@@ -1081,6 +1090,11 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(serror, SCRIPT_ERR_SIG_NULLDUMMY);
                         }
                         popstack(stack);
+
+                        if (fSuccess && pnSigChecks) {
+                            // Use original nKeysCount
+                            *pnSigChecks += origN;
+                        }
 
                         stack.push_back(fSuccess ? vchTrue : vchFalse);
 
@@ -1586,6 +1600,7 @@ bool TransactionSignatureChecker::CheckSequence(
 bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   uint32_t flags, const BaseSignatureChecker &checker,
                   ScriptError *serror) {
+    uint32_t nSigChecks = 0;
     set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
 
     // If FORKID is enabled, we also ensure strict encoding.
@@ -1598,14 +1613,14 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     }
 
     std::vector<valtype> stack, stackCopy;
-    if (!EvalScript(stack, scriptSig, flags, checker, serror)) {
+    if (!EvalScript(stack, scriptSig, flags, checker, serror, &nSigChecks)) {
         // serror is set
         return false;
     }
     if (flags & SCRIPT_VERIFY_P2SH) {
         stackCopy = stack;
     }
-    if (!EvalScript(stack, scriptPubKey, flags, checker, serror)) {
+    if (!EvalScript(stack, scriptPubKey, flags, checker, serror, &nSigChecks)) {
         // serror is set
         return false;
     }
@@ -1643,7 +1658,7 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
             return set_success(serror);
         }
 
-        if (!EvalScript(stack, pubKey2, flags, checker, serror)) {
+        if (!EvalScript(stack, pubKey2, flags, checker, serror, &nSigChecks)) {
             // serror is set
             return false;
         }
@@ -1667,6 +1682,11 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         if (stack.size() != 1) {
             return set_error(serror, SCRIPT_ERR_CLEANSTACK);
         }
+    }
+
+    if ((flags & SCRIPT_VERIFY_SIGCHECKS_LIMIT) &&
+        (nSigChecks > 2 + scriptSig.size() / 45)) {
+        return set_error(serror, SCRIPT_ERR_SIGCHECKS_LIMIT);
     }
 
     return set_success(serror);
